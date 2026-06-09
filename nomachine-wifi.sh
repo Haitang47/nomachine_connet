@@ -5,7 +5,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${NOMACHINE_WIFI_CONFIG:-$SCRIPT_DIR/nomachine-wifi.conf}"
 NXPLAYER="${NXPLAYER:-/usr/NX/bin/nxplayer}"
 NX_PORT="${NOMACHINE_PORT:-4000}"
-OPEN_TIMEOUT="${NOMACHINE_OPEN_TIMEOUT:-1}"
+OPEN_TIMEOUT="${NOMACHINE_OPEN_TIMEOUT:-3}"
+CONNECT_ATTEMPTS="${NOMACHINE_CONNECT_ATTEMPTS:-5}"
+CONNECT_RETRY_SLEEP="${NOMACHINE_CONNECT_RETRY_SLEEP:-1}"
 GENERATED_DIR="$SCRIPT_DIR/generated"
 LOG_DIR="$SCRIPT_DIR/logs"
 
@@ -159,15 +161,58 @@ host_port_open() {
 
 choose_host() {
   local hosts="$1"
-  local host
+  local host attempt resolved
   hosts="${hosts//,/ }"
-  for host in $hosts; do
-    if host_port_open "$host" "$NX_PORT"; then
-      printf '%s\n' "$host"
-      return 0
-    fi
+
+  for attempt in $(seq 1 "$CONNECT_ATTEMPTS"); do
+    for host in $hosts; do
+      resolved="$(resolve_host_ips "$host")"
+      if [ -n "$resolved" ] && ! ip_list_matches_current_subnet "$resolved"; then
+        continue
+      fi
+      if host_port_open "$host" "$NX_PORT"; then
+        printf '%s\n' "$host"
+        return 0
+      fi
+    done
+    [ "$attempt" -lt "$CONNECT_ATTEMPTS" ] && sleep "$CONNECT_RETRY_SLEEP"
   done
   return 1
+}
+
+resolve_host_ips() {
+  getent hosts "$1" 2>/dev/null | awk '{print $1}' | paste -sd, - || true
+}
+
+ip_list_matches_current_subnet() {
+  local ips="$1"
+  local ip
+
+  [ -n "$CURRENT_IP" ] || return 0
+  [ -n "$ips" ] || return 1
+
+  IFS=','
+  for ip in $ips; do
+    IFS=' '
+    [ "${ip%.*}" = "${CURRENT_IP%.*}" ] && return 0
+    IFS=','
+  done
+  IFS=' '
+  return 1
+}
+
+describe_hosts() {
+  local hosts="$1"
+  local host resolved
+  hosts="${hosts//,/ }"
+  for host in $hosts; do
+    resolved="$(resolve_host_ips "$host")"
+    if [ -n "$resolved" ]; then
+      printf '%s resolves to %s\n' "$host" "$resolved" >&2
+    else
+      printf '%s does not resolve\n' "$host" >&2
+    fi
+  done
 }
 
 sed_replacement_escape() {
@@ -256,7 +301,7 @@ list_profiles() {
 
 probe_profile() {
   local requested="${1:-}"
-  local line name matches hosts template host state
+  local line name matches hosts template host state resolved
 
   line="$(find_profile_line "$requested")" || {
     if [ -n "$requested" ]; then
@@ -271,12 +316,16 @@ probe_profile() {
 
   printf 'Profile: %s\n' "$name"
   for host in ${hosts//,/ }; do
-    if host_port_open "$host" "$NX_PORT"; then
+    resolved="$(resolve_host_ips "$host")"
+    [ -n "$resolved" ] || resolved="unresolved"
+    if [ "$resolved" != "unresolved" ] && ! ip_list_matches_current_subnet "$resolved"; then
+      state="wrong-subnet"
+    elif host_port_open "$host" "$NX_PORT"; then
       state="open"
     else
       state="closed"
     fi
-    printf '%-24s %s:%s %s\n' "$host" "$host" "$NX_PORT" "$state"
+    printf '%-24s %-18s %s:%s %s\n' "$host" "$resolved" "$host" "$NX_PORT" "$state"
   done
 }
 
@@ -296,7 +345,10 @@ connect_profile() {
   hosts="$(trim "$hosts")"
   template="$(trim "$template")"
 
-  host="$(choose_host "$hosts")" || die "no configured host has TCP $NX_PORT open for profile $name"
+  host="$(choose_host "$hosts")" || {
+    describe_hosts "$hosts"
+    die "no configured host has TCP $NX_PORT open for profile $name"
+  }
   session_file="$(make_session_file "$name" "$host" "$template")"
 
   mkdir -p "$LOG_DIR"

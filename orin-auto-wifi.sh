@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # This script runs on the Orin. It is intended to be launched by systemd at
-# boot, after NetworkManager starts. It chooses the strongest visible lab WiFi
-# among the two configured profiles and connects to it.
+# boot, after NetworkManager starts. It follows /etc/orin-wifi-target, or uses
+# auto mode to choose the strongest visible configured lab WiFi.
 
 CONFIG_FILE="${ORIN_AUTO_WIFI_CONFIG:-/etc/orin-auto-wifi.conf}"
+TARGET_FILE="${ORIN_WIFI_TARGET_FILE:-/etc/orin-wifi-target}"
 
 IOTSWARM_CON="${IOTSWARM_CON:-iotswarm_5G}"
 IOTSWARM_SSID="${IOTSWARM_SSID:-iotswarm_5G}"
@@ -69,7 +70,47 @@ active_wifi_connection() {
   nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | awk -F: '$2=="802-11-wireless"{print $1; exit}'
 }
 
+resolve_target() {
+  case "$1" in
+    ''|auto)
+      printf 'auto\n'
+      ;;
+    iotswarm|iotswarm_5G|iotswarm_5g)
+      printf '%s\n' "$IOTSWARM_CON"
+      ;;
+    iotlab|IoTLab_5G|IoTLab_5g)
+      printf '%s\n' "$IOTLAB_CON"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+read_boot_target() {
+  local target="${ORIN_WIFI_TARGET:-}"
+
+  if [ -z "$target" ] && [ -f "$TARGET_FILE" ]; then
+    target="$(head -n 1 "$TARGET_FILE" 2>/dev/null | tr -d '\r' || true)"
+  fi
+  resolve_target "$target"
+}
+
+active_wifi_device() {
+  nmcli -t -f NAME,TYPE,DEVICE connection show --active 2>/dev/null | awk -F: '$2=="802-11-wireless"{print $3; exit}'
+}
+
+disable_wifi_powersave() {
+  local dev
+
+  command -v iw >/dev/null 2>&1 || return 0
+  dev="$(active_wifi_device || true)"
+  [ -n "$dev" ] || return 0
+  iw dev "$dev" set power_save off >/dev/null 2>&1 || true
+}
+
 best_visible_profile() {
+  local wanted="${1:-auto}"
   local best_con=""
   local best_ssid=""
   local best_signal="-1"
@@ -87,12 +128,12 @@ best_visible_profile() {
         ;;
     esac
 
-    if ssid_matches "$ssid" "$IOTSWARM_SSID" && [ "$signal" -gt "$best_signal" ]; then
+    if [ "$wanted" != "$IOTLAB_CON" ] && ssid_matches "$ssid" "$IOTSWARM_SSID" && [ "$signal" -gt "$best_signal" ]; then
       best_signal="$signal"
       best_ssid="$ssid"
       best_con="$IOTSWARM_CON"
     fi
-    if ssid_matches "$ssid" "$IOTLAB_SSID" && [ "$signal" -gt "$best_signal" ]; then
+    if [ "$wanted" != "$IOTSWARM_CON" ] && ssid_matches "$ssid" "$IOTLAB_SSID" && [ "$signal" -gt "$best_signal" ]; then
       best_signal="$signal"
       best_ssid="$ssid"
       best_con="$IOTLAB_CON"
@@ -104,9 +145,10 @@ best_visible_profile() {
 }
 
 connect_best_once() {
+  local wanted="${1:-auto}"
   local result con ssid signal active con_id
 
-  result="$(best_visible_profile)" || return 1
+  result="$(best_visible_profile "$wanted")" || return 1
   IFS='|' read -r con ssid signal <<< "$result"
 
   if ! connection_exists "$con"; then
@@ -118,6 +160,7 @@ connect_best_once() {
   if [ "$active" = "$con" ]; then
     log "already connected to $con ($ssid, signal $signal)"
     lock_selected_wifi "$con"
+    disable_wifi_powersave
     return 0
   fi
 
@@ -126,6 +169,7 @@ connect_best_once() {
   nmcli connection modify "$con_id" 802-11-wireless.ssid "$ssid" >/dev/null
   nmcli connection up "$con_id" >/dev/null
   lock_selected_wifi "$con"
+  disable_wifi_powersave
 }
 
 lock_selected_wifi() {
@@ -149,12 +193,31 @@ main() {
     exit 1
   }
 
-  set_connection_autoconnect "$IOTSWARM_CON" yes
-  set_connection_autoconnect "$IOTLAB_CON" yes
+  local boot_target
+  boot_target="$(read_boot_target)"
+
+  case "$boot_target" in
+    "$IOTSWARM_CON")
+      set_connection_autoconnect "$IOTSWARM_CON" yes
+      set_connection_autoconnect "$IOTLAB_CON" no
+      log "boot target is $IOTSWARM_CON"
+      ;;
+    "$IOTLAB_CON")
+      set_connection_autoconnect "$IOTLAB_CON" yes
+      set_connection_autoconnect "$IOTSWARM_CON" no
+      log "boot target is $IOTLAB_CON"
+      ;;
+    *)
+      boot_target="auto"
+      set_connection_autoconnect "$IOTSWARM_CON" yes
+      set_connection_autoconnect "$IOTLAB_CON" yes
+      log "boot target is auto"
+      ;;
+  esac
 
   local attempt
   for attempt in $(seq 1 "$ORIN_AUTOWIFI_ATTEMPTS"); do
-    if connect_best_once; then
+    if connect_best_once "$boot_target"; then
       exit 0
     fi
     log "no configured WiFi visible yet, attempt $attempt/$ORIN_AUTOWIFI_ATTEMPTS"

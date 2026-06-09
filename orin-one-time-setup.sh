@@ -14,6 +14,11 @@ IOTLAB_CON="${IOTLAB_CON:-IoTLab_5G}"
 IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 IOTLAB_PSK="${IOTLAB_PSK:-}"
 PRIORITY="${WIFI_AUTOCONNECT_PRIORITY:-100}"
+WIFI_ROUTE_METRIC="${WIFI_ROUTE_METRIC:-100}"
+TARGET_FILE="${ORIN_WIFI_TARGET_FILE:-/etc/orin-wifi-target}"
+ORIN_WIFI_TARGET="${ORIN_WIFI_TARGET:-auto}"
+CONFIGURE_AVAHI_WIFI_ONLY="${CONFIGURE_AVAHI_WIFI_ONLY:-yes}"
+AVAHI_ALLOW_INTERFACES="${AVAHI_ALLOW_INTERFACES:-wlan0}"
 INSTALL_AUTO_WIFI="${INSTALL_AUTO_WIFI:-yes}"
 DISABLE_OTHER_WIFI_AUTOCONNECT="${DISABLE_OTHER_WIFI_AUTOCONNECT:-yes}"
 
@@ -90,7 +95,10 @@ upsert_wifi() {
     connection.autoconnect-priority "$PRIORITY" \
     connection.autoconnect-retries 0 \
     ipv4.method auto \
+    ipv4.route-metric "$WIFI_ROUTE_METRIC" \
     ipv6.method auto \
+    ipv6.route-metric "$WIFI_ROUTE_METRIC" \
+    802-11-wireless.powersave 2 \
     802-11-wireless.mode infrastructure
 
   if [ -n "$psk" ]; then
@@ -105,6 +113,44 @@ enable_service_if_present() {
   if systemctl list-unit-files "$service" >/dev/null 2>&1; then
     systemctl enable --now "$service" >/dev/null 2>&1 || true
   fi
+}
+
+configure_avahi_wifi_only() {
+  local conf="/etc/avahi/avahi-daemon.conf"
+  local tmp
+
+  [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ] || return 0
+  [ -f "$conf" ] || return 0
+
+  cp -n "$conf" "$conf.bak" 2>/dev/null || true
+  tmp="$(mktemp)"
+  awk -v allow="$AVAHI_ALLOW_INTERFACES" '
+    BEGIN { in_server = 0; wrote = 0 }
+    /^\[server\][[:space:]]*$/ { in_server = 1; print; next }
+    /^\[/ {
+      if (in_server && !wrote) {
+        print "allow-interfaces=" allow
+        wrote = 1
+      }
+      in_server = 0
+    }
+    in_server && /^[#[:space:]]*allow-interfaces=/ {
+      if (!wrote) {
+        print "allow-interfaces=" allow
+        wrote = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (in_server && !wrote) {
+        print "allow-interfaces=" allow
+      }
+    }
+  ' "$conf" > "$tmp"
+  install -m 0644 "$tmp" "$conf"
+  rm -f "$tmp"
+  systemctl restart avahi-daemon.service >/dev/null 2>&1 || true
 }
 
 shell_quote() {
@@ -145,6 +191,7 @@ install_auto_wifi_service() {
     printf 'IOTSWARM_SSID=%s\n' "$(shell_quote "$IOTSWARM_SSID")"
     printf 'IOTLAB_CON=%s\n' "$(shell_quote "$IOTLAB_CON")"
     printf 'IOTLAB_SSID=%s\n' "$(shell_quote "$IOTLAB_SSID")"
+    printf 'TARGET_FILE=%s\n' "$(shell_quote "$TARGET_FILE")"
     printf 'ORIN_AUTOWIFI_ATTEMPTS=18\n'
     printf 'ORIN_AUTOWIFI_INTERVAL=5\n'
     printf 'LOCK_SELECTED_WIFI=yes\n'
@@ -180,6 +227,12 @@ install_switch_wifi_script() {
   install -m 0755 "$source_script" "$installed_script"
 }
 
+init_wifi_target_file() {
+  [ -f "$TARGET_FILE" ] && return 0
+  printf '%s\n' "$ORIN_WIFI_TARGET" > "$TARGET_FILE"
+  chmod 0644 "$TARGET_FILE"
+}
+
 main() {
   case "${1:-}" in
     -h|--help|help)
@@ -200,20 +253,23 @@ main() {
   disable_other_wifi_autoconnect "$IOTSWARM_CON" "$IOTLAB_CON"
 
   enable_service_if_present avahi-daemon.service
+  configure_avahi_wifi_only
   enable_service_if_present nxserver.service
   install_auto_wifi_service
   install_switch_wifi_script
+  init_wifi_target_file
 
   nmcli device wifi rescan >/dev/null 2>&1 || true
 
   printf 'Configured hostname: %s\n' "$ORIN_HOSTNAME"
+  printf 'Avahi interfaces: %s\n' "$AVAHI_ALLOW_INTERFACES"
   printf 'Configured WiFi profiles:\n'
   nmcli -f NAME,UUID,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show | awk -v a="$IOTSWARM_CON" -v b="$IOTLAB_CON" 'NR == 1 || $1 == a || $1 == b'
   if [ "$INSTALL_AUTO_WIFI" = "yes" ]; then
     printf '\nInstalled boot service: orin-auto-wifi.service\n'
-    printf 'It will choose the strongest visible configured WiFi after reboot.\n'
+    printf 'WiFi boot target: %s\n' "$(head -n 1 "$TARGET_FILE" 2>/dev/null || printf 'auto')"
   fi
-  printf '\nAfter reboot, the Orin should auto-connect to either known WiFi if it is visible.\n'
+  printf '\nAfter reboot, the Orin follows /etc/orin-wifi-target.\n'
   printf 'From the laptop, try: ping %s.local\n' "$ORIN_HOSTNAME"
 }
 
