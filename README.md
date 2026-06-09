@@ -3,8 +3,8 @@
 WiFi 名字按你的实际情况写成：
 
 ```text
-iotswarm_5g
-IoTLab_5g
+iotswarm_5G
+IoTLab_5G
 ```
 
 ## 1. 在 Orin 上做一次
@@ -45,12 +45,13 @@ sudo nmcli connection modify '53XXX' connection.autoconnect no
 ```bash
 chmod +x orin-one-time-setup.sh orin-auto-wifi.sh
 
-sudo env IOTSWARM_SSID='iotswarm_5g' IOTSWARM_PSK='Sensornetwork' \
-  IOTLAB_SSID='IoTLab_5g' IOTLAB_PSK='Sensornetwork1!' \
+sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
+  IOTLAB_SSID='IoTLab_5G' IOTLAB_PSK='Sensornetwork1!' \
   ./orin-one-time-setup.sh
 ```
 
 新版脚本会自动关闭其他 WiFi 的 autoconnect，避免开机连回 `53XXX`。
+如果开机太早没扫到目标 WiFi，服务会自动重试。
 
 检查：
 
@@ -100,8 +101,8 @@ onboard-nx.local
 然后按当前 WiFi 填：
 
 ```text
-iotswarm_5g -> 192.168.230.x
-IoTLab_5g   -> 192.168.220.x
+iotswarm_5G -> 192.168.230.x
+IoTLab_5G   -> 192.168.220.x
 ```
 
 不要填带 `(this computer)` 的地址。

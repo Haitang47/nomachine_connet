@@ -155,10 +155,13 @@ install_auto_wifi_service() {
 Description=Choose the best configured lab WiFi for the headless Orin
 Wants=NetworkManager.service
 After=NetworkManager.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/orin-auto-wifi
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
