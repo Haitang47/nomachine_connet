@@ -172,6 +172,14 @@ EOF
   systemctl enable orin-auto-wifi.service >/dev/null
 }
 
+install_switch_wifi_script() {
+  local source_script="$SCRIPT_DIR/orin-switch-wifi.sh"
+  local installed_script="/usr/local/sbin/orin-switch-wifi"
+
+  [ -f "$source_script" ] || return 0
+  install -m 0755 "$source_script" "$installed_script"
+}
+
 main() {
   case "${1:-}" in
     -h|--help|help)
@@ -194,6 +202,7 @@ main() {
   enable_service_if_present avahi-daemon.service
   enable_service_if_present nxserver.service
   install_auto_wifi_service
+  install_switch_wifi_script
 
   nmcli device wifi rescan >/dev/null 2>&1 || true
 

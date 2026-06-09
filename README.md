@@ -14,6 +14,7 @@ IoTLab_5G
 ```text
 orin-one-time-setup.sh
 orin-auto-wifi.sh
+orin-switch-wifi.sh
 ```
 
 假设目录是：nomachine_connet-main
@@ -43,7 +44,7 @@ sudo nmcli connection modify '53XXX' connection.autoconnect no
 运行一次性配置：
 
 ```bash
-chmod +x orin-one-time-setup.sh orin-auto-wifi.sh
+chmod +x orin-one-time-setup.sh orin-auto-wifi.sh orin-switch-wifi.sh
 
 sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
   IOTLAB_SSID='IoTLab_5G' IOTLAB_PSK='Sensornetwork1!' \
@@ -133,33 +134,29 @@ sudo systemctl enable --now nxserver
 
 ## 4. 不重启切换房间
 
-在 Orin 上运行，自动重新选择当前更强的 WiFi：
+远程控制 Orin 时，切 Orin 的 WiFi 会断开当前 NoMachine。正确流程是：先让 Orin 切目标 WiFi，再把笔记本切到同一个 WiFi 后重连。
+
+切到 `iotswarm_5G`：
 
 ```bash
-sudo systemctl restart orin-auto-wifi.service
-journalctl -u orin-auto-wifi.service -b --no-pager | tail -30
-nmcli -t -f NAME,TYPE connection show --active
+sudo orin-switch-wifi iotswarm
 ```
 
-强制切到 `iotswarm_5G`：
+切到 `IoTLab_5G`：
 
 ```bash
-sudo nmcli connection modify iotswarm_5G connection.autoconnect yes
-sudo nmcli connection modify IoTLab_5G connection.autoconnect no
-sudo nmcli connection down IoTLab_5G
-sudo nmcli connection up iotswarm_5G
+sudo orin-switch-wifi iotlab
 ```
 
-强制切到 `IoTLab_5G`：
+如果还没重新跑安装脚本，也可以在脚本目录运行：
 
 ```bash
-sudo nmcli connection modify IoTLab_5G connection.autoconnect yes
-sudo nmcli connection modify iotswarm_5G connection.autoconnect no
-sudo nmcli connection down iotswarm_5G
-sudo nmcli connection up IoTLab_5G
+sudo ./orin-switch-wifi.sh iotlab
 ```
 
-切完后，笔记本也连同一个 WiFi，再运行：
+执行后当前 NoMachine 会断开。然后笔记本连目标 WiFi，再运行：
+
+切换成功后，脚本会把另一个 WiFi 设为 `autoconnect no`，并显式 `down` 掉，避免串连。
 
 ```bash
 cd /home/jht/nomachine
