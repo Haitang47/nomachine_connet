@@ -1,6 +1,6 @@
 # NoMachine 双 WiFi 快速操作
 
-WiFi 名字按你的实际情况写成：
+WiFi 名字按实际情况写成：
 
 ```text
 iotswarm_5G
@@ -16,7 +16,7 @@ orin-one-time-setup.sh
 orin-auto-wifi.sh
 ```
 
-假设目录是：
+假设目录是：nomachine_connet-main
 
 ```bash
 cd ~/nomachine_connet-main
