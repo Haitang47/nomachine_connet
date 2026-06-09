@@ -130,3 +130,38 @@ sudo systemctl enable --now nxserver
 ```
 
 `orin-auto-wifi.service` 显示 `inactive (dead)` 是正常的，它是开机运行一次。
+
+## 4. 不重启切换房间
+
+在 Orin 上运行，自动重新选择当前更强的 WiFi：
+
+```bash
+sudo systemctl restart orin-auto-wifi.service
+journalctl -u orin-auto-wifi.service -b --no-pager | tail -30
+nmcli -t -f NAME,TYPE connection show --active
+```
+
+强制切到 `iotswarm_5G`：
+
+```bash
+sudo nmcli connection modify iotswarm_5G connection.autoconnect yes
+sudo nmcli connection modify IoTLab_5G connection.autoconnect no
+sudo nmcli connection down IoTLab_5G
+sudo nmcli connection up iotswarm_5G
+```
+
+强制切到 `IoTLab_5G`：
+
+```bash
+sudo nmcli connection modify IoTLab_5G connection.autoconnect yes
+sudo nmcli connection modify iotswarm_5G connection.autoconnect no
+sudo nmcli connection down iotswarm_5G
+sudo nmcli connection up IoTLab_5G
+```
+
+切完后，笔记本也连同一个 WiFi，再运行：
+
+```bash
+cd /home/jht/nomachine
+./nomachine-wifi.sh connect
+```
