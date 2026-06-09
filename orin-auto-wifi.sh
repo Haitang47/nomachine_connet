@@ -24,7 +24,11 @@ log() {
 }
 
 connection_exists() {
-  nmcli -t -f NAME connection show "$1" >/dev/null 2>&1
+  nmcli -t -f NAME connection show | awk -F: -v name="$1" '$1 == name {found=1} END {exit found ? 0 : 1}'
+}
+
+connection_uuid_by_name() {
+  nmcli -t -f NAME,UUID connection show | awk -F: -v name="$1" '$1 == name {print $2; exit}'
 }
 
 active_wifi_connection() {
@@ -66,7 +70,7 @@ best_visible_profile() {
 }
 
 connect_best_once() {
-  local result con ssid signal active
+  local result con ssid signal active con_id
 
   result="$(best_visible_profile)" || return 1
   IFS='|' read -r con ssid signal <<< "$result"
@@ -82,8 +86,9 @@ connect_best_once() {
     return 0
   fi
 
+  con_id="$(connection_uuid_by_name "$con")"
   log "connecting to $con ($ssid, signal $signal)"
-  nmcli connection up "$con" >/dev/null
+  nmcli connection up "$con_id" >/dev/null
 }
 
 main() {

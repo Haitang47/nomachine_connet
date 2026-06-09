@@ -42,7 +42,11 @@ die() {
 }
 
 connection_exists() {
-  nmcli -t -f NAME connection show "$1" >/dev/null 2>&1
+  nmcli -t -f NAME connection show | awk -F: -v name="$1" '$1 == name {found=1} END {exit found ? 0 : 1}'
+}
+
+connection_uuid_by_name() {
+  nmcli -t -f NAME,UUID connection show | awk -F: -v name="$1" '$1 == name {print $2; exit}'
 }
 
 prompt_psk_if_needed() {
@@ -69,14 +73,17 @@ upsert_wifi() {
   local con_name="$1"
   local ssid="$2"
   local psk="$3"
+  local con_id
 
   if connection_exists "$con_name"; then
-    nmcli connection modify "$con_name" 802-11-wireless.ssid "$ssid"
+    con_id="$(connection_uuid_by_name "$con_name")"
+    nmcli connection modify "$con_id" 802-11-wireless.ssid "$ssid"
   else
     nmcli connection add type wifi ifname "*" con-name "$con_name" ssid "$ssid"
+    con_id="$(connection_uuid_by_name "$con_name")"
   fi
 
-  nmcli connection modify "$con_name" \
+  nmcli connection modify "$con_id" \
     connection.autoconnect yes \
     connection.autoconnect-priority "$PRIORITY" \
     connection.autoconnect-retries 0 \
@@ -85,7 +92,7 @@ upsert_wifi() {
     802-11-wireless.mode infrastructure
 
   if [ -n "$psk" ]; then
-    nmcli connection modify "$con_name" \
+    nmcli connection modify "$con_id" \
       wifi-sec.key-mgmt wpa-psk \
       wifi-sec.psk "$psk"
   fi
@@ -170,7 +177,7 @@ main() {
 
   printf 'Configured hostname: %s\n' "$ORIN_HOSTNAME"
   printf 'Configured WiFi profiles:\n'
-  nmcli -f NAME,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show "$IOTSWARM_CON" "$IOTLAB_CON"
+  nmcli -f NAME,UUID,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show | awk -v a="$IOTSWARM_CON" -v b="$IOTLAB_CON" 'NR == 1 || $1 == a || $1 == b'
   if [ "$INSTALL_AUTO_WIFI" = "yes" ]; then
     printf '\nInstalled boot service: orin-auto-wifi.service\n'
     printf 'It will choose the strongest visible configured WiFi after reboot.\n'
