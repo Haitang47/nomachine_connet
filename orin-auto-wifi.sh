@@ -13,6 +13,7 @@ IOTLAB_CON="${IOTLAB_CON:-IoTLab_5G}"
 IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 ORIN_AUTOWIFI_ATTEMPTS="${ORIN_AUTOWIFI_ATTEMPTS:-18}"
 ORIN_AUTOWIFI_INTERVAL="${ORIN_AUTOWIFI_INTERVAL:-5}"
+LOCK_SELECTED_WIFI="${LOCK_SELECTED_WIFI:-yes}"
 
 if [ -f "$CONFIG_FILE" ]; then
   # shellcheck disable=SC1090
@@ -52,6 +53,16 @@ connection_exists() {
 
 connection_uuid_by_name() {
   nmcli -t -f NAME,UUID connection show | awk -F: -v name="$1" '$1 == name {print $2; exit}'
+}
+
+set_connection_autoconnect() {
+  local con="$1"
+  local value="$2"
+  local con_id
+
+  connection_exists "$con" || return 0
+  con_id="$(connection_uuid_by_name "$con")"
+  nmcli connection modify "$con_id" connection.autoconnect "$value" >/dev/null 2>&1 || true
 }
 
 active_wifi_connection() {
@@ -106,6 +117,7 @@ connect_best_once() {
   active="$(active_wifi_connection || true)"
   if [ "$active" = "$con" ]; then
     log "already connected to $con ($ssid, signal $signal)"
+    lock_selected_wifi "$con"
     return 0
   fi
 
@@ -113,6 +125,22 @@ connect_best_once() {
   log "connecting to $con ($ssid, signal $signal)"
   nmcli connection modify "$con_id" 802-11-wireless.ssid "$ssid" >/dev/null
   nmcli connection up "$con_id" >/dev/null
+  lock_selected_wifi "$con"
+}
+
+lock_selected_wifi() {
+  local selected="$1"
+  [ "$LOCK_SELECTED_WIFI" = "yes" ] || return 0
+
+  if [ "$selected" = "$IOTSWARM_CON" ]; then
+    set_connection_autoconnect "$IOTSWARM_CON" yes
+    set_connection_autoconnect "$IOTLAB_CON" no
+    log "locked this boot to $IOTSWARM_CON; disabled $IOTLAB_CON autoconnect"
+  elif [ "$selected" = "$IOTLAB_CON" ]; then
+    set_connection_autoconnect "$IOTLAB_CON" yes
+    set_connection_autoconnect "$IOTSWARM_CON" no
+    log "locked this boot to $IOTLAB_CON; disabled $IOTSWARM_CON autoconnect"
+  fi
 }
 
 main() {
@@ -120,6 +148,9 @@ main() {
     log "nmcli not found"
     exit 1
   }
+
+  set_connection_autoconnect "$IOTSWARM_CON" yes
+  set_connection_autoconnect "$IOTLAB_CON" yes
 
   local attempt
   for attempt in $(seq 1 "$ORIN_AUTOWIFI_ATTEMPTS"); do

@@ -52,6 +52,7 @@ sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
 
 新版脚本会自动关闭其他 WiFi 的 autoconnect，避免开机连回 `53XXX`。
 如果开机太早没扫到目标 WiFi，服务会自动重试。
+开机选中一个 WiFi 后，本次开机会锁定它，不会因另一个 WiFi 信号变强而主动切过去。
 
 检查：
 
@@ -102,7 +103,7 @@ onboard-nx.local
 
 ```text
 iotswarm_5G -> 192.168.230.x
-IoTLab_5G   -> 192.168.220.x
+IoTLab_5G   -> 192.168.50.x
 ```
 
 不要填带 `(this computer)` 的地址。

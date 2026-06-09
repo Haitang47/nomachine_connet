@@ -147,6 +147,7 @@ install_auto_wifi_service() {
     printf 'IOTLAB_SSID=%s\n' "$(shell_quote "$IOTLAB_SSID")"
     printf 'ORIN_AUTOWIFI_ATTEMPTS=18\n'
     printf 'ORIN_AUTOWIFI_INTERVAL=5\n'
+    printf 'LOCK_SELECTED_WIFI=yes\n'
   } > "$config_file"
   chmod 0644 "$config_file"
 
