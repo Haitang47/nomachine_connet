@@ -6,6 +6,7 @@ set -euo pipefail
 # join either lab WiFi after boot.
 
 ORIN_HOSTNAME="${ORIN_HOSTNAME:-onboard-nx}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 IOTSWARM_CON="${IOTSWARM_CON:-iotswarm_5G}"
 IOTSWARM_SSID="${IOTSWARM_SSID:-iotswarm_5G}"
 IOTSWARM_PSK="${IOTSWARM_PSK:-}"
@@ -13,6 +14,7 @@ IOTLAB_CON="${IOTLAB_CON:-IoTLab_5G}"
 IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 IOTLAB_PSK="${IOTLAB_PSK:-}"
 PRIORITY="${WIFI_AUTOCONNECT_PRIORITY:-100}"
+INSTALL_AUTO_WIFI="${INSTALL_AUTO_WIFI:-yes}"
 
 usage() {
   cat <<'EOF'
@@ -25,6 +27,7 @@ Optional environment variables:
   IOTSWARM_PSK='wifi password'
   IOTLAB_SSID='IoTLab_5G'
   IOTLAB_PSK='wifi password'
+  INSTALL_AUTO_WIFI=yes
 
 Example:
   sudo env IOTSWARM_SSID='iotswarm(5g)' IOTSWARM_PSK='xxx' \
@@ -95,6 +98,52 @@ enable_service_if_present() {
   fi
 }
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
+install_auto_wifi_service() {
+  local source_script="$SCRIPT_DIR/orin-auto-wifi.sh"
+  local installed_script="/usr/local/sbin/orin-auto-wifi"
+  local config_file="/etc/orin-auto-wifi.conf"
+  local service_file="/etc/systemd/system/orin-auto-wifi.service"
+
+  [ "$INSTALL_AUTO_WIFI" = "yes" ] || return 0
+  [ -f "$source_script" ] || {
+    printf 'Skipping auto WiFi service: %s not found.\n' "$source_script" >&2
+    return 0
+  }
+
+  install -m 0755 "$source_script" "$installed_script"
+
+  {
+    printf 'IOTSWARM_CON=%s\n' "$(shell_quote "$IOTSWARM_CON")"
+    printf 'IOTSWARM_SSID=%s\n' "$(shell_quote "$IOTSWARM_SSID")"
+    printf 'IOTLAB_CON=%s\n' "$(shell_quote "$IOTLAB_CON")"
+    printf 'IOTLAB_SSID=%s\n' "$(shell_quote "$IOTLAB_SSID")"
+    printf 'ORIN_AUTOWIFI_ATTEMPTS=18\n'
+    printf 'ORIN_AUTOWIFI_INTERVAL=5\n'
+  } > "$config_file"
+  chmod 0644 "$config_file"
+
+  cat > "$service_file" <<'EOF'
+[Unit]
+Description=Choose the best configured lab WiFi for the headless Orin
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/orin-auto-wifi
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable orin-auto-wifi.service >/dev/null
+}
+
 main() {
   case "${1:-}" in
     -h|--help|help)
@@ -115,12 +164,17 @@ main() {
 
   enable_service_if_present avahi-daemon.service
   enable_service_if_present nxserver.service
+  install_auto_wifi_service
 
   nmcli device wifi rescan >/dev/null 2>&1 || true
 
   printf 'Configured hostname: %s\n' "$ORIN_HOSTNAME"
   printf 'Configured WiFi profiles:\n'
   nmcli -f NAME,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show "$IOTSWARM_CON" "$IOTLAB_CON"
+  if [ "$INSTALL_AUTO_WIFI" = "yes" ]; then
+    printf '\nInstalled boot service: orin-auto-wifi.service\n'
+    printf 'It will choose the strongest visible configured WiFi after reboot.\n'
+  fi
   printf '\nAfter reboot, the Orin should auto-connect to either known WiFi if it is visible.\n'
   printf 'From the laptop, try: ping %s.local\n' "$ORIN_HOSTNAME"
 }

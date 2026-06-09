@@ -15,19 +15,26 @@
 如果当前还能 SSH 到 Orin，在笔记本运行：
 
 ```bash
-scp /home/jht/nomachine/orin-one-time-setup.sh nv@ORIN当前IP:~/
+scp /home/jht/nomachine/orin-one-time-setup.sh \
+  /home/jht/nomachine/orin-auto-wifi.sh \
+  nv@ORIN当前IP:~/
 ```
 
 把 `ORIN当前IP` 换成你现在能连上的 Orin IP。
 
-如果不能 SSH，就临时接显示屏，把 `orin-one-time-setup.sh` 拷到 Orin 的 home 目录。
+如果不能 SSH，就临时接显示屏，把这两个文件拷到 Orin 的 home 目录：
+
+```text
+orin-one-time-setup.sh
+orin-auto-wifi.sh
+```
 
 ### 2. 在 Orin 上运行配置
 
 在 Orin 终端运行：
 
 ```bash
-chmod +x ~/orin-one-time-setup.sh
+chmod +x ~/orin-one-time-setup.sh ~/orin-auto-wifi.sh
 sudo env IOTSWARM_SSID='iotswarm(5g)' IOTSWARM_PSK='iotswarm的密码' \
   IOTLAB_SSID='IoTLab(5g)' IOTLAB_PSK='IoTLab的密码' \
   ~/orin-one-time-setup.sh
@@ -58,6 +65,20 @@ onboard-nx
 ```text
 onboard-nx.local
 ```
+
+### 4. 断电重启后还要不要再跑脚本
+
+不用。
+
+`orin-one-time-setup.sh` 是一次性配置脚本。它会把 WiFi、hostname、NoMachine/avahi 服务配置写进系统，断电重启后仍然有效。
+
+它还会安装一个开机服务：
+
+```bash
+systemctl status orin-auto-wifi.service
+```
+
+这个服务会在 Orin 每次开机后运行一次，扫描 `iotswarm` 和 `IoTLab`，然后连接当前能看到且信号更强的那个 WiFi。
 
 ## B. 平时用脚本连接 NoMachine
 
@@ -171,7 +192,14 @@ ping onboard-nx.local
 1. 临时接显示屏或网线进 Orin。
 2. 确认 Orin 已经跑过 `orin-one-time-setup.sh`。
 3. 确认两个 WiFi 的 SSID 和密码写对。
-4. 重启 Orin 再试。
+4. 确认开机自动选 WiFi 服务已启用：
+
+```bash
+systemctl status orin-auto-wifi.service
+systemctl is-enabled orin-auto-wifi.service
+```
+
+5. 重启 Orin 再试。
 
 ### 4. NoMachine server 是否启动
 
