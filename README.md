@@ -100,7 +100,15 @@ onboard-nx.local
 ./nomachine-wifi.sh scan
 ```
 
-然后按当前 WiFi 填：
+脚本默认只自动连：
+
+```text
+onboard-nx.local
+```
+
+扫描出来的 IP 只能人工确认后手动填 NoMachine，不要随便写进配置，否则可能连到别人电脑。
+
+按当前 WiFi 判断 IP 范围：
 
 ```text
 iotswarm_5G -> 192.168.230.x
