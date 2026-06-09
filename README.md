@@ -34,6 +34,12 @@ nmcli -f NAME,UUID,TYPE,AUTOCONNECT connection show | grep -E 'iotswarm|IoTLab'
 sudo nmcli connection delete UUID
 ```
 
+关掉不想自动连接的旧 WiFi，例如 `53XXX`：
+
+```bash
+sudo nmcli connection modify '53XXX' connection.autoconnect no
+```
+
 运行一次性配置：
 
 ```bash
@@ -43,6 +49,8 @@ sudo env IOTSWARM_SSID='iotswarm_5g' IOTSWARM_PSK='Sensornetwork' \
   IOTLAB_SSID='IoTLab_5g' IOTLAB_PSK='Sensornetwork1!' \
   ./orin-one-time-setup.sh
 ```
+
+新版脚本会自动关闭其他 WiFi 的 autoconnect，避免开机连回 `53XXX`。
 
 检查：
 
@@ -113,6 +121,7 @@ Orin：
 
 ```bash
 nmcli -t -f NAME,TYPE connection show --active
+nmcli dev wifi list | grep -E 'iotswarm|IoTLab'
 systemctl is-enabled orin-auto-wifi.service
 journalctl -u orin-auto-wifi.service -b --no-pager
 sudo systemctl enable --now nxserver

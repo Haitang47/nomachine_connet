@@ -15,6 +15,7 @@ IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 IOTLAB_PSK="${IOTLAB_PSK:-}"
 PRIORITY="${WIFI_AUTOCONNECT_PRIORITY:-100}"
 INSTALL_AUTO_WIFI="${INSTALL_AUTO_WIFI:-yes}"
+DISABLE_OTHER_WIFI_AUTOCONNECT="${DISABLE_OTHER_WIFI_AUTOCONNECT:-yes}"
 
 usage() {
   cat <<'EOF'
@@ -28,6 +29,7 @@ Optional environment variables:
   IOTLAB_SSID='IoTLab_5G'
   IOTLAB_PSK='wifi password'
   INSTALL_AUTO_WIFI=yes
+  DISABLE_OTHER_WIFI_AUTOCONNECT=yes
 
 Example:
   sudo env IOTSWARM_SSID='iotswarm(5g)' IOTSWARM_PSK='xxx' \
@@ -109,6 +111,21 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+disable_other_wifi_autoconnect() {
+  local keep_a="$1"
+  local keep_b="$2"
+  local name uuid type
+
+  [ "$DISABLE_OTHER_WIFI_AUTOCONNECT" = "yes" ] || return 0
+
+  while IFS=: read -r name uuid type; do
+    [ "$type" = "802-11-wireless" ] || [ "$type" = "wifi" ] || continue
+    [ "$name" = "$keep_a" ] && continue
+    [ "$name" = "$keep_b" ] && continue
+    nmcli connection modify "$uuid" connection.autoconnect no >/dev/null 2>&1 || true
+  done < <(nmcli -t -f NAME,UUID,TYPE connection show)
+}
+
 install_auto_wifi_service() {
   local source_script="$SCRIPT_DIR/orin-auto-wifi.sh"
   local installed_script="/usr/local/sbin/orin-auto-wifi"
@@ -168,6 +185,7 @@ main() {
   hostnamectl set-hostname "$ORIN_HOSTNAME" 2>/dev/null || true
   upsert_wifi "$IOTSWARM_CON" "$IOTSWARM_SSID" "$IOTSWARM_PSK"
   upsert_wifi "$IOTLAB_CON" "$IOTLAB_SSID" "$IOTLAB_PSK"
+  disable_other_wifi_autoconnect "$IOTSWARM_CON" "$IOTLAB_CON"
 
   enable_service_if_present avahi-daemon.service
   enable_service_if_present nxserver.service

@@ -23,6 +23,29 @@ log() {
   printf '[orin-auto-wifi] %s\n' "$*"
 }
 
+ssid_aliases() {
+  local ssid="$1"
+  printf '%s\n' "$ssid"
+  case "$ssid" in
+    *_5g)
+      printf '%s\n' "${ssid%_5g}_5G"
+      ;;
+    *_5G)
+      printf '%s\n' "${ssid%_5G}_5g"
+      ;;
+  esac
+}
+
+ssid_matches() {
+  local visible="$1"
+  local configured="$2"
+  local alias
+  while IFS= read -r alias; do
+    [ "$visible" = "$alias" ] && return 0
+  done < <(ssid_aliases "$configured")
+  return 1
+}
+
 connection_exists() {
   nmcli -t -f NAME connection show | awk -F: -v name="$1" '$1 == name {found=1} END {exit found ? 0 : 1}'
 }
@@ -53,12 +76,12 @@ best_visible_profile() {
         ;;
     esac
 
-    if [ "$ssid" = "$IOTSWARM_SSID" ] && [ "$signal" -gt "$best_signal" ]; then
+    if ssid_matches "$ssid" "$IOTSWARM_SSID" && [ "$signal" -gt "$best_signal" ]; then
       best_signal="$signal"
       best_ssid="$ssid"
       best_con="$IOTSWARM_CON"
     fi
-    if [ "$ssid" = "$IOTLAB_SSID" ] && [ "$signal" -gt "$best_signal" ]; then
+    if ssid_matches "$ssid" "$IOTLAB_SSID" && [ "$signal" -gt "$best_signal" ]; then
       best_signal="$signal"
       best_ssid="$ssid"
       best_con="$IOTLAB_CON"
@@ -88,6 +111,7 @@ connect_best_once() {
 
   con_id="$(connection_uuid_by_name "$con")"
   log "connecting to $con ($ssid, signal $signal)"
+  nmcli connection modify "$con_id" 802-11-wireless.ssid "$ssid" >/dev/null
   nmcli connection up "$con_id" >/dev/null
 }
 
