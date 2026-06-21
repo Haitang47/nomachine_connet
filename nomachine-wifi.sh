@@ -8,6 +8,7 @@ NX_PORT="${NOMACHINE_PORT:-4000}"
 OPEN_TIMEOUT="${NOMACHINE_OPEN_TIMEOUT:-3}"
 CONNECT_ATTEMPTS="${NOMACHINE_CONNECT_ATTEMPTS:-5}"
 CONNECT_RETRY_SLEEP="${NOMACHINE_CONNECT_RETRY_SLEEP:-1}"
+MDNS_RESOLVE_TIMEOUT="${NOMACHINE_MDNS_RESOLVE_TIMEOUT:-2}"
 GENERATED_DIR="$SCRIPT_DIR/generated"
 LOG_DIR="$SCRIPT_DIR/logs"
 
@@ -161,27 +162,70 @@ host_port_open() {
 
 choose_host() {
   local hosts="$1"
-  local host attempt resolved
+  local host attempt resolved ip
   hosts="${hosts//,/ }"
 
   for attempt in $(seq 1 "$CONNECT_ATTEMPTS"); do
     for host in $hosts; do
       resolved="$(resolve_host_ips "$host")"
-      if [ -n "$resolved" ] && ! ip_list_matches_current_subnet "$resolved"; then
-        continue
-      fi
-      if host_port_open "$host" "$NX_PORT"; then
-        printf '%s\n' "$host"
-        return 0
-      fi
+      [ -n "$resolved" ] || continue
+      for ip in ${resolved//,/ }; do
+        ip_list_matches_current_subnet "$ip" || continue
+        if host_port_open "$ip" "$NX_PORT"; then
+          printf '%s\n' "$ip"
+          return 0
+        fi
+      done
     done
     [ "$attempt" -lt "$CONNECT_ATTEMPTS" ] && sleep "$CONNECT_RETRY_SLEEP"
   done
   return 1
 }
 
+normalize_ipv4_list() {
+  awk -F. '
+    NF == 4 {
+      valid = 1
+      for (i = 1; i <= 4; i++) {
+        if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) {
+          valid = 0
+        }
+      }
+      if (valid && !seen[$0]++) {
+        print $0
+      }
+    }
+  ' | paste -sd, -
+}
+
+resolve_host_ips_via_wifi_mdns() {
+  local host="$1"
+  local raw=""
+
+  [ -n "$CURRENT_DEV" ] || return 1
+  if command -v avahi-resolve-host-name >/dev/null 2>&1; then
+    raw="$(timeout "$MDNS_RESOLVE_TIMEOUT" avahi-resolve-host-name -4 -i "$CURRENT_DEV" "$host" 2>/dev/null || true)"
+  elif command -v avahi-resolve >/dev/null 2>&1; then
+    raw="$(timeout "$MDNS_RESOLVE_TIMEOUT" avahi-resolve -4 -i "$CURRENT_DEV" -n "$host" 2>/dev/null || true)"
+  else
+    return 1
+  fi
+
+  [ -n "$raw" ] || return 1
+  printf '%s\n' "$raw" | awk '{print $2}' | normalize_ipv4_list
+}
+
 resolve_host_ips() {
-  getent hosts "$1" 2>/dev/null | awk '{print $1}' | paste -sd, - || true
+  local host="$1"
+  local resolved
+
+  resolved="$(resolve_host_ips_via_wifi_mdns "$host" || true)"
+  if [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | normalize_ipv4_list || true
 }
 
 ip_list_matches_current_subnet() {
@@ -280,6 +324,11 @@ print_status() {
   printf 'WiFi SSID:       %s\n' "${CURRENT_SSID:-unknown}"
   printf 'WiFi device:     %s\n' "${CURRENT_DEV:-unknown}"
   printf 'WiFi IPv4:       %s\n' "${CURRENT_IP:-unknown}"
+  if [ -n "$CURRENT_DEV" ] && { command -v avahi-resolve-host-name >/dev/null 2>&1 || command -v avahi-resolve >/dev/null 2>&1; }; then
+    printf 'mDNS lookup:     WiFi-interface-bound Avahi\n'
+  else
+    printf 'mDNS lookup:     getent fallback (install avahi-utils for stricter lookup)\n'
+  fi
 
   local line name matches hosts template
   if line="$(find_profile_line "" 2>/dev/null)"; then
@@ -301,8 +350,9 @@ list_profiles() {
 
 probe_profile() {
   local requested="${1:-}"
-  local line name matches hosts template host state resolved
+  local line name matches hosts template host state resolved ip
 
+  collect_context
   line="$(find_profile_line "$requested")" || {
     if [ -n "$requested" ]; then
       die "profile not found: $requested"
@@ -313,19 +363,25 @@ probe_profile() {
   IFS='|' read -r name matches hosts template _ <<< "$line"
   name="$(trim "$name")"
   hosts="$(trim "$hosts")"
+  [ -n "$CURRENT_IP" ] || die "current WiFi has no IPv4 address; wait for DHCP before probing"
 
   printf 'Profile: %s\n' "$name"
   for host in ${hosts//,/ }; do
     resolved="$(resolve_host_ips "$host")"
-    [ -n "$resolved" ] || resolved="unresolved"
-    if [ "$resolved" != "unresolved" ] && ! ip_list_matches_current_subnet "$resolved"; then
-      state="wrong-subnet"
-    elif host_port_open "$host" "$NX_PORT"; then
-      state="open"
-    else
-      state="closed"
+    if [ -z "$resolved" ]; then
+      printf '%-24s %-18s %s:%s %s\n' "$host" "unresolved" "$host" "$NX_PORT" "unresolved"
+      continue
     fi
-    printf '%-24s %-18s %s:%s %s\n' "$host" "$resolved" "$host" "$NX_PORT" "$state"
+    for ip in ${resolved//,/ }; do
+      if ! ip_list_matches_current_subnet "$ip"; then
+        state="wrong-subnet"
+      elif host_port_open "$ip" "$NX_PORT"; then
+        state="open"
+      else
+        state="closed"
+      fi
+      printf '%-24s %-18s %s:%s %s\n' "$host" "$ip" "$ip" "$NX_PORT" "$state"
+    done
   done
 }
 
@@ -333,6 +389,7 @@ connect_profile() {
   local requested="${1:-}"
   local line name matches hosts template host session_file
 
+  collect_context
   line="$(find_profile_line "$requested")" || {
     if [ -n "$requested" ]; then
       die "profile not found: $requested"
@@ -344,6 +401,7 @@ connect_profile() {
   name="$(trim "$name")"
   hosts="$(trim "$hosts")"
   template="$(trim "$template")"
+  [ -n "$CURRENT_IP" ] || die "current WiFi has no IPv4 address; wait for DHCP before connecting"
 
   host="$(choose_host "$hosts")" || {
     describe_hosts "$hosts"

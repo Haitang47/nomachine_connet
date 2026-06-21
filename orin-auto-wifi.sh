@@ -15,6 +15,7 @@ IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 ORIN_AUTOWIFI_ATTEMPTS="${ORIN_AUTOWIFI_ATTEMPTS:-18}"
 ORIN_AUTOWIFI_INTERVAL="${ORIN_AUTOWIFI_INTERVAL:-5}"
 LOCK_SELECTED_WIFI="${LOCK_SELECTED_WIFI:-yes}"
+REFRESH_AVAHI_AFTER_WIFI="${REFRESH_AVAHI_AFTER_WIFI:-yes}"
 
 if [ -f "$CONFIG_FILE" ]; then
   # shellcheck disable=SC1090
@@ -109,6 +110,11 @@ disable_wifi_powersave() {
   iw dev "$dev" set power_save off >/dev/null 2>&1 || true
 }
 
+refresh_avahi_after_wifi_connect() {
+  [ "$REFRESH_AVAHI_AFTER_WIFI" = "yes" ] || return 0
+  systemctl try-restart avahi-daemon.service >/dev/null 2>&1 || true
+}
+
 best_visible_profile() {
   local wanted="${1:-auto}"
   local best_con=""
@@ -161,6 +167,7 @@ connect_best_once() {
     log "already connected to $con ($ssid, signal $signal)"
     lock_selected_wifi "$con"
     disable_wifi_powersave
+    refresh_avahi_after_wifi_connect
     return 0
   fi
 
@@ -170,6 +177,7 @@ connect_best_once() {
   nmcli connection up "$con_id" >/dev/null
   lock_selected_wifi "$con"
   disable_wifi_powersave
+  refresh_avahi_after_wifi_connect
 }
 
 lock_selected_wifi() {

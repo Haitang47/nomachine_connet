@@ -15,6 +15,7 @@ IoTLab_5G
 orin-one-time-setup.sh
 orin-auto-wifi.sh
 orin-switch-wifi.sh
+orin-cleanup.sh
 ```
 
 假设目录是：nomachine_connet-main
@@ -44,7 +45,7 @@ sudo nmcli connection modify '53XXX' connection.autoconnect no
 运行一次性配置：
 
 ```bash
-chmod +x orin-one-time-setup.sh orin-auto-wifi.sh orin-switch-wifi.sh
+chmod +x orin-one-time-setup.sh orin-auto-wifi.sh orin-switch-wifi.sh orin-cleanup.sh
 
 sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
   IOTLAB_SSID='IoTLab_5G' IOTLAB_PSK='Sensornetwork1!' \
@@ -210,4 +211,61 @@ sudo ./orin-switch-wifi.sh iotlab
 ```bash
 cd /home/jht/nomachine
 ./nomachine-wifi.sh connect
+```
+
+## 5. 停用、清理和重新启用
+
+如果不再使用这套 NoMachine WiFi 配置，在 Orin 上执行：
+
+```bash
+cd ~/nomachine_connet-main
+sudo ./orin-cleanup.sh
+```
+
+一次性配置完成后，也可以在任意目录执行：
+
+```bash
+sudo orin-wifi-cleanup
+```
+
+清理操作会：
+
+- 停止并删除本项目安装的开机 WiFi 服务和辅助脚本；
+- 删除 `iotswarm_5G` / `IoTLab_5G` WiFi 配置；
+- 恢复首次配置前保存的主机名、Avahi 设置以及 Avahi/NoMachine 服务启用状态；
+- 重新允许其余 WiFi 自动连接，并重新打开 WiFi 网络功能。
+
+如需保留两条实验室 WiFi 配置，执行：
+
+```bash
+sudo env REMOVE_WIFI_PROFILES=no ./orin-cleanup.sh
+```
+
+如需按首次配置前记录的值恢复 WiFi 的自动连接开关、而不把所有剩余 WiFi 都设为自动连接，执行：
+
+```bash
+sudo env REENABLE_WIFI_AUTOCONNECT=no ./orin-cleanup.sh
+```
+
+以后需要重新启用时，只需重新运行第 1 步的 `orin-one-time-setup.sh`。每次重新启用都会重新保存一份可用于下次清理的恢复记录。
+
+如果 Orin 之前已经运行过旧版本脚本，旧版本没有保存原主机名和服务状态；首次执行新版清理时，WiFi 配置和本项目服务仍会被清理并恢复 WiFi 自动连接，但原主机名无法自动推断。重新运行一次新版的一次性配置后，之后的清理即可完整恢复这些状态。
+
+## 6. `probe` 显示有线雷达地址（例如 `192.168.1.50`）
+
+这不是 WiFi 路由优先级问题，而是 `onboard-nx.local` 被全局 DNS/mDNS 缓存或有线接口的 mDNS 记录解析到了。新版会在一次性配置时自动识别实际 WiFi 网卡，只允许 Avahi 在该网卡发布，并关闭 mDNS 跨接口转发；有线雷达仍保持可用，不会被禁用。
+
+更新脚本后，在 Orin 上重新运行一次第 1 步的一次性配置。然后检查：
+
+```bash
+grep -E '^(allow-interfaces|enable-reflector)=' /etc/avahi/avahi-daemon.conf
+nmcli -t -f DEVICE,TYPE device status
+```
+
+应看到 `allow-interfaces=` 后是 WiFi 网卡名（通常为 `wlan0`），以及 `enable-reflector=no`。笔记本端的新版 `probe` 会优先通过当前 WiFi 网卡查询 mDNS；即使系统仍返回有线地址，它也只会对当前 WiFi 同网段的地址建立 NoMachine 连接。
+
+如果笔记本没有 `avahi-resolve-host-name`，建议安装 `avahi-utils`；脚本没有该工具时仍会拒绝连接到不同网段的地址：
+
+```bash
+sudo apt-get install -y avahi-utils
 ```

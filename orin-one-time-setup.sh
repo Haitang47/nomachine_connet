@@ -18,9 +18,16 @@ WIFI_ROUTE_METRIC="${WIFI_ROUTE_METRIC:-100}"
 TARGET_FILE="${ORIN_WIFI_TARGET_FILE:-/etc/orin-wifi-target}"
 ORIN_WIFI_TARGET="${ORIN_WIFI_TARGET:-auto}"
 CONFIGURE_AVAHI_WIFI_ONLY="${CONFIGURE_AVAHI_WIFI_ONLY:-yes}"
-AVAHI_ALLOW_INTERFACES="${AVAHI_ALLOW_INTERFACES:-wlan0}"
+AVAHI_ALLOW_INTERFACES="${AVAHI_ALLOW_INTERFACES:-auto}"
+AVAHI_DISABLE_REFLECTOR="${AVAHI_DISABLE_REFLECTOR:-yes}"
 INSTALL_AUTO_WIFI="${INSTALL_AUTO_WIFI:-yes}"
 DISABLE_OTHER_WIFI_AUTOCONNECT="${DISABLE_OTHER_WIFI_AUTOCONNECT:-yes}"
+STATE_DIR="${ORIN_WIFI_STATE_DIR:-/etc/orin-nomachine-wifi}"
+AUTOCONNECT_STATE_FILE="$STATE_DIR/wifi-autoconnect.before"
+HOSTNAME_STATE_FILE="$STATE_DIR/hostname.before"
+AVAHI_BACKUP_FILE="$STATE_DIR/avahi-daemon.conf.before"
+AVAHI_SERVICE_STATE_FILE="$STATE_DIR/avahi-daemon.enabled.before"
+NXSERVER_SERVICE_STATE_FILE="$STATE_DIR/nxserver.enabled.before"
 
 usage() {
   cat <<'EOF'
@@ -35,6 +42,7 @@ Optional environment variables:
   IOTLAB_PSK='wifi password'
   INSTALL_AUTO_WIFI=yes
   DISABLE_OTHER_WIFI_AUTOCONNECT=yes
+  AVAHI_ALLOW_INTERFACES=auto
 
 Example:
   sudo env IOTSWARM_SSID='iotswarm(5g)' IOTSWARM_PSK='xxx' \
@@ -115,41 +123,95 @@ enable_service_if_present() {
   fi
 }
 
-configure_avahi_wifi_only() {
-  local conf="/etc/avahi/avahi-daemon.conf"
+wifi_interfaces() {
+  local dev type
+
+  while IFS=: read -r dev type; do
+    [ -n "$dev" ] || continue
+    case "$type" in
+      wifi|802-11-wireless)
+        printf '%s\n' "$dev"
+        ;;
+    esac
+  done < <(nmcli -t -f DEVICE,TYPE device status 2>/dev/null)
+
+  for dev in /sys/class/net/*; do
+    [ -d "$dev/wireless" ] && basename "$dev"
+  done
+}
+
+resolve_avahi_allow_interfaces() {
+  local interfaces
+
+  if [ "$AVAHI_ALLOW_INTERFACES" != "auto" ]; then
+    printf '%s\n' "$AVAHI_ALLOW_INTERFACES"
+    return 0
+  fi
+
+  interfaces="$(wifi_interfaces | awk '!seen[$0]++' | paste -sd, -)"
+  [ -n "$interfaces" ] || die "could not find a WiFi interface; set AVAHI_ALLOW_INTERFACES explicitly"
+  printf '%s\n' "$interfaces"
+}
+
+set_avahi_option() {
+  local conf="$1"
+  local section="$2"
+  local option="$3"
+  local value="$4"
   local tmp
 
-  [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ] || return 0
-  [ -f "$conf" ] || return 0
-
-  cp -n "$conf" "$conf.bak" 2>/dev/null || true
   tmp="$(mktemp)"
-  awk -v allow="$AVAHI_ALLOW_INTERFACES" '
-    BEGIN { in_server = 0; wrote = 0 }
-    /^\[server\][[:space:]]*$/ { in_server = 1; print; next }
+  awk -v section="$section" -v option="$option" -v value="$value" '
+    BEGIN { in_section = 0; saw_section = 0; wrote = 0; option_re = "^[#[:space:]]*" option "[[:space:]]*=" }
+    $0 == "[" section "]" {
+      in_section = 1
+      saw_section = 1
+      print
+      next
+    }
     /^\[/ {
-      if (in_server && !wrote) {
-        print "allow-interfaces=" allow
+      if (in_section && !wrote) {
+        print option "=" value
         wrote = 1
       }
-      in_server = 0
+      in_section = 0
+      print
+      next
     }
-    in_server && /^[#[:space:]]*allow-interfaces=/ {
+    in_section && $0 ~ option_re {
       if (!wrote) {
-        print "allow-interfaces=" allow
+        print option "=" value
         wrote = 1
       }
       next
     }
     { print }
     END {
-      if (in_server && !wrote) {
-        print "allow-interfaces=" allow
+      if (in_section && !wrote) {
+        print option "=" value
+      }
+      if (!saw_section) {
+        print ""
+        print "[" section "]"
+        print option "=" value
       }
     }
   ' "$conf" > "$tmp"
   install -m 0644 "$tmp" "$conf"
   rm -f "$tmp"
+}
+
+configure_avahi_wifi_only() {
+  local conf="/etc/avahi/avahi-daemon.conf"
+
+  [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ] || return 0
+  [ -f "$conf" ] || return 0
+
+  cp -n "$conf" "$conf.bak" 2>/dev/null || true
+  set_avahi_option "$conf" server allow-interfaces "$AVAHI_ALLOW_INTERFACES"
+  if [ "$AVAHI_DISABLE_REFLECTOR" = "yes" ]; then
+    set_avahi_option "$conf" reflector enable-reflector no
+  fi
   systemctl restart avahi-daemon.service >/dev/null 2>&1 || true
 }
 
@@ -172,6 +234,72 @@ disable_other_wifi_autoconnect() {
   done < <(nmcli -t -f NAME,UUID,TYPE connection show)
 }
 
+init_rollback_state() {
+  install -d -m 0700 "$STATE_DIR"
+}
+
+save_hostname_before_change() {
+  local current
+
+  [ -f "$HOSTNAME_STATE_FILE" ] && return 0
+  current="$(hostnamectl --static 2>/dev/null || hostname)"
+  [ -n "$current" ] || return 0
+  printf '%s\n' "$current" > "$HOSTNAME_STATE_FILE"
+  chmod 0600 "$HOSTNAME_STATE_FILE"
+}
+
+save_wifi_autoconnect_before_change() {
+  local tmp uuid type autoconnect
+
+  [ -f "$AUTOCONNECT_STATE_FILE" ] && return 0
+  tmp="$(mktemp "$STATE_DIR/wifi-autoconnect.before.XXXXXX")"
+  while IFS=: read -r uuid type autoconnect; do
+    [ "$type" = "802-11-wireless" ] || [ "$type" = "wifi" ] || continue
+    [ -n "$uuid" ] || continue
+    printf '%s\t%s\n' "$uuid" "$autoconnect" >> "$tmp"
+  done < <(nmcli -t -f UUID,TYPE,AUTOCONNECT connection show)
+  install -m 0600 "$tmp" "$AUTOCONNECT_STATE_FILE"
+  rm -f "$tmp"
+}
+
+backup_avahi_before_change() {
+  local conf="/etc/avahi/avahi-daemon.conf"
+
+  [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ] || return 0
+  [ -f "$conf" ] || return 0
+  [ -f "$AVAHI_BACKUP_FILE" ] && return 0
+  cp -p "$conf" "$AVAHI_BACKUP_FILE"
+  chmod 0600 "$AVAHI_BACKUP_FILE"
+}
+
+save_service_enabled_before_change() {
+  local service="$1"
+  local state_file="$2"
+  local state
+
+  [ -f "$state_file" ] && return 0
+  systemctl list-unit-files "$service" >/dev/null 2>&1 || return 0
+  state="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+  case "$state" in
+    enabled|enabled-runtime|linked|linked-runtime|alias)
+      printf 'yes\n' > "$state_file"
+      ;;
+    *)
+      printf 'no\n' > "$state_file"
+      ;;
+  esac
+  chmod 0600 "$state_file"
+}
+
+save_rollback_state() {
+  init_rollback_state
+  save_hostname_before_change
+  save_wifi_autoconnect_before_change
+  backup_avahi_before_change
+  save_service_enabled_before_change avahi-daemon.service "$AVAHI_SERVICE_STATE_FILE"
+  save_service_enabled_before_change nxserver.service "$NXSERVER_SERVICE_STATE_FILE"
+}
+
 install_auto_wifi_service() {
   local source_script="$SCRIPT_DIR/orin-auto-wifi.sh"
   local installed_script="/usr/local/sbin/orin-auto-wifi"
@@ -192,6 +320,7 @@ install_auto_wifi_service() {
     printf 'IOTLAB_CON=%s\n' "$(shell_quote "$IOTLAB_CON")"
     printf 'IOTLAB_SSID=%s\n' "$(shell_quote "$IOTLAB_SSID")"
     printf 'TARGET_FILE=%s\n' "$(shell_quote "$TARGET_FILE")"
+    printf 'ORIN_WIFI_STATE_DIR=%s\n' "$(shell_quote "$STATE_DIR")"
     printf 'ORIN_AUTOWIFI_ATTEMPTS=18\n'
     printf 'ORIN_AUTOWIFI_INTERVAL=5\n'
     printf 'LOCK_SELECTED_WIFI=yes\n'
@@ -227,6 +356,17 @@ install_switch_wifi_script() {
   install -m 0755 "$source_script" "$installed_script"
 }
 
+install_cleanup_script() {
+  local source_script="$SCRIPT_DIR/orin-cleanup.sh"
+  local installed_script="/usr/local/sbin/orin-wifi-cleanup"
+
+  [ -f "$source_script" ] || {
+    printf 'Skipping cleanup command: %s not found.\n' "$source_script" >&2
+    return 0
+  }
+  install -m 0755 "$source_script" "$installed_script"
+}
+
 init_wifi_target_file() {
   [ -f "$TARGET_FILE" ] && return 0
   printf '%s\n' "$ORIN_WIFI_TARGET" > "$TARGET_FILE"
@@ -246,7 +386,11 @@ main() {
 
   IOTSWARM_PSK="$(prompt_psk_if_needed IOTSWARM_PSK "$IOTSWARM_CON" "$IOTSWARM_PSK")"
   IOTLAB_PSK="$(prompt_psk_if_needed IOTLAB_PSK "$IOTLAB_CON" "$IOTLAB_PSK")"
+  if [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ]; then
+    AVAHI_ALLOW_INTERFACES="$(resolve_avahi_allow_interfaces)"
+  fi
 
+  save_rollback_state
   hostnamectl set-hostname "$ORIN_HOSTNAME" 2>/dev/null || true
   upsert_wifi "$IOTSWARM_CON" "$IOTSWARM_SSID" "$IOTSWARM_PSK"
   upsert_wifi "$IOTLAB_CON" "$IOTLAB_SSID" "$IOTLAB_PSK"
@@ -257,6 +401,7 @@ main() {
   enable_service_if_present nxserver.service
   install_auto_wifi_service
   install_switch_wifi_script
+  install_cleanup_script
   init_wifi_target_file
 
   nmcli device wifi rescan >/dev/null 2>&1 || true
@@ -268,6 +413,9 @@ main() {
   if [ "$INSTALL_AUTO_WIFI" = "yes" ]; then
     printf '\nInstalled boot service: orin-auto-wifi.service\n'
     printf 'WiFi boot target: %s\n' "$(head -n 1 "$TARGET_FILE" 2>/dev/null || printf 'auto')"
+  fi
+  if [ -x /usr/local/sbin/orin-wifi-cleanup ]; then
+    printf 'To remove this setup later, run: sudo orin-wifi-cleanup\n'
   fi
   printf '\nAfter reboot, the Orin follows /etc/orin-wifi-target.\n'
   printf 'From the laptop, try: ping %s.local\n' "$ORIN_HOSTNAME"
