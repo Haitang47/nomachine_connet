@@ -52,9 +52,57 @@ sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
   ./orin-one-time-setup.sh
 ```
 
+如果要新增第三个 WiFi，不要只改笔记本端配置；Orin 端也要重新运行一次安装脚本，把新增 WiFi 写进 NetworkManager 和开机服务：
+
+```bash
+sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
+  IOTLAB_SSID='IoTLab_5G' IOTLAB_PSK='Sensornetwork1!' \
+  ORIN_EXTRA_WIFI_PROFILES='room_wifi|Room WiFi|RoomPassword|room' \
+  ./orin-one-time-setup.sh
+```
+
+`ORIN_EXTRA_WIFI_PROFILES` 格式是：
+
+```text
+连接名|真实 WiFi 名称 SSID|WiFi 密码|切换时使用的短别名
+```
+
+如果要一次新增多个 WiFi，可以用换行分隔多条记录。连接名建议用英文、数字、下划线，真实 SSID 按路由器显示的 WiFi 名称写。
+
+例如新增一个 WiFi，名字是 `iotswarm_outdoor`，密码是 `Sensornetwork`，可以这样写：
+
+```bash
+sudo env IOTSWARM_SSID='iotswarm_5G' IOTSWARM_PSK='Sensornetwork' \
+  IOTLAB_SSID='IoTLab_5G' IOTLAB_PSK='Sensornetwork1!' \
+  ORIN_EXTRA_WIFI_PROFILES='iotswarm_outdoor|iotswarm_outdoor|Sensornetwork|outdoor' \
+  ./orin-one-time-setup.sh
+```
+
+这里四段分别是：
+
+```text
+iotswarm_outdoor|iotswarm_outdoor|Sensornetwork|outdoor
+连接名          |真实 WiFi 名称 |密码         |切换用短别名
+```
+
+常见问题：
+
+- 新增 WiFi 后必须在 Orin 上重新运行一次 `orin-one-time-setup.sh`，否则开机服务不知道新 WiFi。
+- WiFi 名称大小写要完全一致，`iotswarm_outdoor` 和 `IOTSWARM_OUTDOOR` 不是同一个 SSID。
+- 如果这个 WiFi 和别的 WiFi 密码一样，也仍然要单独写一条，因为脚本按 SSID/连接名识别，不会只靠密码识别。
+- 如果新增 WiFi 的网段和已有 WiFi 不一样，笔记本端 `nomachine-wifi.conf` 里的 `subnet=` 也要改成实际网段。
+
 新版脚本会自动关闭其他 WiFi 的 autoconnect，避免开机连回 `53XXX`。
 如果开机太早没扫到目标 WiFi，服务会自动重试。
-默认开机目标是 `auto`，会在两个 WiFi 里选可见的；手动设置目标后就不再按信号强弱猜。
+默认开机目标是 `auto`，会在这次 `sudo env ... ./orin-one-time-setup.sh` 写进去的 WiFi 里选可见且信号最强的那个。以上面的命令为例，候选只包括：
+
+```text
+iotswarm_5G
+IoTLab_5G
+iotswarm_outdoor
+```
+
+它不会在系统保存过密码的所有 WiFi 里选择。开机服务每次运行时还会把未纳入这套配置的 WiFi 的 `autoconnect` 关掉，避免 NetworkManager 自动连回旧 WiFi。手动设置目标后就不再按信号强弱猜。
 
 检查：
 
@@ -90,6 +138,20 @@ cd /home/jht/nomachine
 ./nomachine-wifi.sh probe
 ./nomachine-wifi.sh connect
 ```
+
+如果新增了第三个 WiFi，也要在笔记本端的 `nomachine-wifi.conf` 里加一行。例子：
+
+```text
+room|connection=room_wifi;ssid=Room WiFi;subnet=192.168.88.0/24|onboard-nx.local|
+```
+
+对应上面的 `iotswarm_outdoor` 示例，可以加成：
+
+```text
+outdoor|connection=iotswarm_outdoor;ssid=iotswarm_outdoor;subnet=192.168.xx.0/24|onboard-nx.local|
+```
+
+其中 `room` 是 profile 名，`connection` 对应 Orin 端的连接名，`ssid` 对应真实 WiFi 名称，`subnet` 改成这个 WiFi 实际分到的网段。不确定网段时，先连上该 WiFi 后运行 `./nomachine-wifi.sh status` 看 `WiFi IPv4`。
 
 `connect` 会重试几次；如果失败，先看它提示的 `onboard-nx.local resolves to ...` 是不是当前 WiFi 网段。
 

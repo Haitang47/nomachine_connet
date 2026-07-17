@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Run this script once on the Orin, not on the laptop.
-# It creates/updates two NetworkManager WiFi profiles so the headless Orin can
-# join either lab WiFi after boot.
+# It creates/updates NetworkManager WiFi profiles so the headless Orin can join
+# a known lab or room WiFi after boot.
 
 ORIN_HOSTNAME="${ORIN_HOSTNAME:-onboard-nx}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,6 +13,7 @@ IOTSWARM_PSK="${IOTSWARM_PSK:-}"
 IOTLAB_CON="${IOTLAB_CON:-IoTLab_5G}"
 IOTLAB_SSID="${IOTLAB_SSID:-IoTLab_5G}"
 IOTLAB_PSK="${IOTLAB_PSK:-}"
+ORIN_EXTRA_WIFI_PROFILES="${ORIN_EXTRA_WIFI_PROFILES:-}"
 PRIORITY="${WIFI_AUTOCONNECT_PRIORITY:-100}"
 WIFI_ROUTE_METRIC="${WIFI_ROUTE_METRIC:-100}"
 TARGET_FILE="${ORIN_WIFI_TARGET_FILE:-/etc/orin-wifi-target}"
@@ -40,6 +41,7 @@ Optional environment variables:
   IOTSWARM_PSK='wifi password'
   IOTLAB_SSID='IoTLab_5G'
   IOTLAB_PSK='wifi password'
+  ORIN_EXTRA_WIFI_PROFILES='connection name|SSID|wifi password|alias1,alias2'
   INSTALL_AUTO_WIFI=yes
   DISABLE_OTHER_WIFI_AUTOCONNECT=yes
   AVAHI_ALLOW_INTERFACES=auto
@@ -47,6 +49,10 @@ Optional environment variables:
 Example:
   sudo env IOTSWARM_SSID='iotswarm(5g)' IOTSWARM_PSK='xxx' \
     IOTLAB_SSID='IoTLab(5g)' IOTLAB_PSK='yyy' \
+    ./orin-one-time-setup.sh
+
+Add one more WiFi:
+  sudo env ORIN_EXTRA_WIFI_PROFILES='room_wifi|Room WiFi|secret|room' \
     ./orin-one-time-setup.sh
 EOF
 }
@@ -219,17 +225,84 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+MANAGED_WIFI_NAMES=""
+AUTO_WIFI_PROFILES=""
+
+append_managed_wifi_name() {
+  if [ -z "$MANAGED_WIFI_NAMES" ]; then
+    MANAGED_WIFI_NAMES="$1"
+  else
+    MANAGED_WIFI_NAMES="$MANAGED_WIFI_NAMES"$'\n'"$1"
+  fi
+}
+
+append_auto_wifi_profile() {
+  local con_name="$1"
+  local ssid="$2"
+  local aliases="$3"
+  local line="$con_name|$ssid|$aliases"
+
+  if [ -z "$AUTO_WIFI_PROFILES" ]; then
+    AUTO_WIFI_PROFILES="$line"
+  else
+    AUTO_WIFI_PROFILES="$AUTO_WIFI_PROFILES"$'\n'"$line"
+  fi
+}
+
+default_wifi_profiles() {
+  printf '%s|%s|%s|%s\n' "$IOTSWARM_CON" "$IOTSWARM_SSID" "$IOTSWARM_PSK" "iotswarm,iotswarm_5G,iotswarm_5g"
+  printf '%s|%s|%s|%s\n' "$IOTLAB_CON" "$IOTLAB_SSID" "$IOTLAB_PSK" "iotlab,IoTLab_5G,IoTLab_5g"
+}
+
+wifi_profile_lines() {
+  local line
+
+  default_wifi_profiles
+  if [ -n "$ORIN_EXTRA_WIFI_PROFILES" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      printf '%s\n' "$line"
+    done <<< "$ORIN_EXTRA_WIFI_PROFILES"
+  fi
+}
+
+configure_wifi_profiles() {
+  local line con_name ssid psk aliases psk_label
+
+  MANAGED_WIFI_NAMES=""
+  AUTO_WIFI_PROFILES=""
+  while IFS= read -r line; do
+    IFS='|' read -r con_name ssid psk aliases _ <<< "$line"
+    [ -n "$con_name" ] || continue
+    [ -n "$ssid" ] || ssid="$con_name"
+    aliases="${aliases:-}"
+    psk_label="PSK for $con_name"
+    psk="$(prompt_psk_if_needed "$psk_label" "$con_name" "${psk:-}")"
+    upsert_wifi "$con_name" "$ssid" "$psk"
+    append_managed_wifi_name "$con_name"
+    append_auto_wifi_profile "$con_name" "$ssid" "$aliases"
+  done < <(wifi_profile_lines)
+}
+
+connection_name_is_managed() {
+  local wanted="$1"
+  local name
+
+  while IFS= read -r name || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    [ "$wanted" = "$name" ] && return 0
+  done <<< "$MANAGED_WIFI_NAMES"
+  return 1
+}
+
 disable_other_wifi_autoconnect() {
-  local keep_a="$1"
-  local keep_b="$2"
   local name uuid type
 
   [ "$DISABLE_OTHER_WIFI_AUTOCONNECT" = "yes" ] || return 0
 
   while IFS=: read -r name uuid type; do
     [ "$type" = "802-11-wireless" ] || [ "$type" = "wifi" ] || continue
-    [ "$name" = "$keep_a" ] && continue
-    [ "$name" = "$keep_b" ] && continue
+    connection_name_is_managed "$name" && continue
     nmcli connection modify "$uuid" connection.autoconnect no >/dev/null 2>&1 || true
   done < <(nmcli -t -f NAME,UUID,TYPE connection show)
 }
@@ -315,6 +388,7 @@ install_auto_wifi_service() {
   install -m 0755 "$source_script" "$installed_script"
 
   {
+    printf 'WIFI_PROFILES=%s\n' "$(shell_quote "$AUTO_WIFI_PROFILES")"
     printf 'IOTSWARM_CON=%s\n' "$(shell_quote "$IOTSWARM_CON")"
     printf 'IOTSWARM_SSID=%s\n' "$(shell_quote "$IOTSWARM_SSID")"
     printf 'IOTLAB_CON=%s\n' "$(shell_quote "$IOTLAB_CON")"
@@ -324,6 +398,7 @@ install_auto_wifi_service() {
     printf 'ORIN_AUTOWIFI_ATTEMPTS=18\n'
     printf 'ORIN_AUTOWIFI_INTERVAL=5\n'
     printf 'LOCK_SELECTED_WIFI=yes\n'
+    printf 'DISABLE_UNMANAGED_WIFI_AUTOCONNECT=yes\n'
   } > "$config_file"
   chmod 0644 "$config_file"
 
@@ -384,17 +459,14 @@ main() {
   [ "${EUID:-$(id -u)}" -eq 0 ] || die "run this on the Orin with sudo"
   command -v nmcli >/dev/null 2>&1 || die "nmcli is required"
 
-  IOTSWARM_PSK="$(prompt_psk_if_needed IOTSWARM_PSK "$IOTSWARM_CON" "$IOTSWARM_PSK")"
-  IOTLAB_PSK="$(prompt_psk_if_needed IOTLAB_PSK "$IOTLAB_CON" "$IOTLAB_PSK")"
   if [ "$CONFIGURE_AVAHI_WIFI_ONLY" = "yes" ]; then
     AVAHI_ALLOW_INTERFACES="$(resolve_avahi_allow_interfaces)"
   fi
 
   save_rollback_state
   hostnamectl set-hostname "$ORIN_HOSTNAME" 2>/dev/null || true
-  upsert_wifi "$IOTSWARM_CON" "$IOTSWARM_SSID" "$IOTSWARM_PSK"
-  upsert_wifi "$IOTLAB_CON" "$IOTLAB_SSID" "$IOTLAB_PSK"
-  disable_other_wifi_autoconnect "$IOTSWARM_CON" "$IOTLAB_CON"
+  configure_wifi_profiles
+  disable_other_wifi_autoconnect
 
   enable_service_if_present avahi-daemon.service
   configure_avahi_wifi_only
@@ -409,7 +481,7 @@ main() {
   printf 'Configured hostname: %s\n' "$ORIN_HOSTNAME"
   printf 'Avahi interfaces: %s\n' "$AVAHI_ALLOW_INTERFACES"
   printf 'Configured WiFi profiles:\n'
-  nmcli -f NAME,UUID,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show | awk -v a="$IOTSWARM_CON" -v b="$IOTLAB_CON" 'NR == 1 || $1 == a || $1 == b'
+  printf '%s\n' "$MANAGED_WIFI_NAMES" | sed 's/^/  /'
   if [ "$INSTALL_AUTO_WIFI" = "yes" ]; then
     printf '\nInstalled boot service: orin-auto-wifi.service\n'
     printf 'WiFi boot target: %s\n' "$(head -n 1 "$TARGET_FILE" 2>/dev/null || printf 'auto')"

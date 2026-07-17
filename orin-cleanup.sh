@@ -11,6 +11,7 @@ TARGET_FILE="${ORIN_WIFI_TARGET_FILE:-/etc/orin-wifi-target}"
 
 IOTSWARM_CON="${IOTSWARM_CON:-iotswarm_5G}"
 IOTLAB_CON="${IOTLAB_CON:-IoTLab_5G}"
+WIFI_PROFILES="${WIFI_PROFILES:-}"
 REMOVE_WIFI_PROFILES="${REMOVE_WIFI_PROFILES:-yes}"
 REENABLE_WIFI_AUTOCONNECT="${REENABLE_WIFI_AUTOCONNECT:-yes}"
 
@@ -35,7 +36,7 @@ orin-one-time-setup.sh, restores saved hostname and Avahi settings, and
 reenables automatic connection for the remaining WiFi profiles.
 
 Optional environment variables:
-  REMOVE_WIFI_PROFILES=no          Keep the two managed WiFi profiles.
+  REMOVE_WIFI_PROFILES=no          Keep the managed WiFi profiles.
   REENABLE_WIFI_AUTOCONNECT=no     Restore only the saved autoconnect values.
 EOF
 }
@@ -51,6 +52,26 @@ load_setup_config() {
   # shellcheck disable=SC1090
   . "$CONFIG_FILE"
   refresh_state_paths
+}
+
+default_wifi_profile_names() {
+  printf '%s\n' "$IOTSWARM_CON"
+  printf '%s\n' "$IOTLAB_CON"
+}
+
+managed_wifi_profile_names() {
+  local line con ssid aliases
+
+  if [ -n "${WIFI_PROFILES:-}" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      IFS='|' read -r con ssid aliases _ <<< "$line"
+      [ -n "$con" ] || continue
+      printf '%s\n' "$con"
+    done <<< "$WIFI_PROFILES"
+  else
+    default_wifi_profile_names
+  fi
 }
 
 connection_exists_uuid() {
@@ -186,8 +207,10 @@ main() {
   restore_saved_autoconnect
 
   if [ "$REMOVE_WIFI_PROFILES" = "yes" ]; then
-    delete_wifi_profile "$IOTSWARM_CON"
-    delete_wifi_profile "$IOTLAB_CON"
+    while IFS= read -r con_name; do
+      [ -n "$con_name" ] || continue
+      delete_wifi_profile "$con_name"
+    done < <(managed_wifi_profile_names)
   fi
 
   reenable_remaining_wifi_autoconnect
@@ -199,9 +222,9 @@ main() {
 
   printf 'Removed the Orin NoMachine WiFi setup.\n'
   if [ "$REMOVE_WIFI_PROFILES" = "yes" ]; then
-    printf 'Deleted WiFi profiles: %s, %s\n' "$IOTSWARM_CON" "$IOTLAB_CON"
+    printf 'Deleted managed WiFi profiles.\n'
   else
-    printf 'Kept WiFi profiles: %s, %s\n' "$IOTSWARM_CON" "$IOTLAB_CON"
+    printf 'Kept managed WiFi profiles.\n'
   fi
   if [ "$REENABLE_WIFI_AUTOCONNECT" = "yes" ]; then
     printf 'Enabled automatic connection for all remaining WiFi profiles.\n'
